@@ -14,7 +14,7 @@ jobs:
           chmod +x build-xcframework.sh
           ./build-xcframework.sh
 
-      - name: Build llama.swiftui
+            - name: Build llama.swiftui
         run: |
           xcodebuild \
             -project examples/llama.swiftui/llama.swiftui.xcodeproj \
@@ -27,12 +27,15 @@ jobs:
             CONFIGURATION_BUILD_DIR=build-ios \
             build
 
+      - name: List build output
+        run: |
+          find . -name "*.app" -type d
+
       - name: Package IPA
         run: |
           mkdir Payload
           cp -r build-ios/llama.swiftui.app Payload/
           zip -r llama-swiftui.ipa Payload
-
       - uses: actions/upload-artifact@v4
         with:
           name: llama-swiftui-ipa
