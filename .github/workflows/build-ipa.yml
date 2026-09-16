@@ -9,10 +9,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Xcode and SDKs
-        run: |
-          xcodebuild -downloadPlatform iOS
-
       - name: Build the llama.cpp xcframework
         run: |
           chmod +x build-xcframework.sh
