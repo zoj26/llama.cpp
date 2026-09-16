@@ -1,0 +1,43 @@
+name: Build unsigned IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Xcode and SDKs
+        run: |
+          xcodebuild -downloadPlatform iOS
+
+      - name: Build the llama.cpp xcframework
+        run: |
+          chmod +x build-xcframework.sh
+          ./build-xcframework.sh
+
+      - name: Build llama.swiftui
+        run: |
+          xcodebuild \
+            -project examples/llama.swiftui/llama.swiftui.xcodeproj \
+            -scheme llama.swiftui \
+            -sdk iphoneos \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CONFIGURATION_BUILD_DIR=build-ios \
+            build
+
+      - name: Package IPA
+        run: |
+          mkdir Payload
+          cp -r build-ios/llama.swiftui.app Payload/
+          zip -r llama-swiftui.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: llama-swiftui-ipa
+          path: llama-swiftui.ipa
