@@ -6,15 +6,14 @@ on:
 jobs:
   build:
     runs-on: macos-15
-    env:
-      IPHONEOS_DEPLOYMENT_TARGET: '16.0'
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build the llama.cpp xcframework
+      - name: Build the llama.cpp xcframework (iOS 16.0, device only)
         run: |
           chmod +x build-xcframework.sh
-          ./build-xcframework.sh
+          sed -i '' 's/IOS_MIN_OS_VERSION=16.4/IOS_MIN_OS_VERSION=16.0/' build-xcframework.sh
+          ./build-xcframework.sh ios-device
 
       - name: Build llama.swiftui
         run: |
