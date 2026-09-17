@@ -34,7 +34,7 @@ jobs:
       - name: Package IPA
         run: |
           mkdir Payload
-          cp -r build-ios/llama.swiftui.app Payload/
+          cp -r examples/llama.swiftui/build-ios/llama.swiftui.app Payload/
           zip -r llama-swiftui.ipa Payload
 
       - uses: actions/upload-artifact@v4
