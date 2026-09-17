@@ -6,6 +6,8 @@ on:
 jobs:
   build:
     runs-on: macos-15
+    env:
+      IPHONEOS_DEPLOYMENT_TARGET: '16.0'
     steps:
       - uses: actions/checkout@v4
 
@@ -25,6 +27,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CONFIGURATION_BUILD_DIR=build-ios \
+            IPHONEOS_DEPLOYMENT_TARGET=16.0 \
             build
 
       - name: List build output
