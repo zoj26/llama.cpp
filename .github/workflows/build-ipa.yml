@@ -27,6 +27,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CONFIGURATION_BUILD_DIR=build-ios \
             IPHONEOS_DEPLOYMENT_TARGET=16.0 \
+            SWIFT_STRICT_CONCURRENCY=minimal \
             build
 
       - name: List build output
