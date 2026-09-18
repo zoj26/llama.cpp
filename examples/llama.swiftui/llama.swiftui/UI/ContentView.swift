@@ -57,6 +57,7 @@ struct ContentView: View {
 
     func sendText() {
         Task {
+            await llamaState.clear()
             await llamaState.complete(text: multiLineText)
             multiLineText = ""
         }
