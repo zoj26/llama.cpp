@@ -82,3 +82,47 @@ struct DownloadButton: View {
                     downloadTask?.cancel()
                     status = "download"
                 }) {
+                    Text("\(modelName) (Downloading \(Int(progress * 100))%)")
+                }
+            } else if status == "downloaded" {
+                Button(action: {
+                    let fileURL = DownloadButton.getFileURL(filename: filename)
+                    if !FileManager.default.fileExists(atPath: fileURL.path) {
+                        download()
+                        return
+                    }
+                    Task {
+                        do {
+                            try await llamaState.loadModel(modelUrl: fileURL)
+                        } catch let err {
+                            print("Error: \(err.localizedDescription)")
+                        }
+                    }
+                }) {
+                    Text("Load \(modelName)")
+                }
+            } else {
+                Text("Unknown status")
+            }
+        }
+        .onDisappear() {
+            downloadTask?.cancel()
+        }
+        .onChange(of: llamaState.cacheCleared) { newValue in
+            if newValue {
+                downloadTask?.cancel()
+                let fileURL = DownloadButton.getFileURL(filename: filename)
+                status = FileManager.default.fileExists(atPath: fileURL.path) ? "downloaded" : "download"
+            }
+        }
+    }
+}
+
+// #Preview {
+//    DownloadButton(
+//        llamaState: LlamaState(),
+//        modelName: "TheBloke / TinyLlama-1.1B-1T-OpenOrca-GGUF (Q4_0)",
+//        modelUrl: "https://huggingface.co/TheBloke/TinyLlama-1.1B-1T-OpenOrca-GGUF/resolve/main/tinyllama-1.1b-1t-openorca.Q4_0.gguf?download=true",
+//        filename: "tinyllama-1.1b-1t-openorca.Q4_0.gguf"
+//    )
+// }
