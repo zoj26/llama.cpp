@@ -55,11 +55,13 @@ struct InputButton: View {
                     try FileManager.default.copyItem(at: temporaryURL, to: fileURL)
                     print("Writing to \(filename) completed")
 
-                    llamaState.cacheCleared = false
+                    DispatchQueue.main.async {
+                        llamaState.cacheCleared = false
 
-                    let model = Model(name: modelName, url: self.inputLink, filename: filename, status: "downloaded")
-                    llamaState.downloadedModels.append(model)
-                    status = "downloaded"
+                        let model = Model(name: modelName, url: self.inputLink, filename: filename, status: "downloaded")
+                        llamaState.downloadedModels.append(model)
+                        status = "downloaded"
+                    }
                 }
             } catch let err {
                 print("Error: \(err.localizedDescription)")
@@ -105,10 +107,12 @@ struct InputButton: View {
                         download()
                         return
                     }
-                    do {
-                        try llamaState.loadModel(modelUrl: fileURL)
-                    } catch let err {
-                        print("Error: \(err.localizedDescription)")
+                    Task {
+                        do {
+                            try await llamaState.loadModel(modelUrl: fileURL)
+                        } catch let err {
+                            print("Error: \(err.localizedDescription)")
+                        }
                     }
                 }) {
                     Text("Load Custom Model")
