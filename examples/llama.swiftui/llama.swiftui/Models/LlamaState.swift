@@ -24,7 +24,9 @@ class LlamaState: ObservableObject {
 
     init() {
         loadModelsFromDisk()
-        loadDefaultModels()
+        Task {
+            await loadDefaultModels()
+        }
     }
 
     private func loadModelsFromDisk() {
@@ -40,9 +42,9 @@ class LlamaState: ObservableObject {
         }
     }
 
-    private func loadDefaultModels() {
+    private func loadDefaultModels() async {
         do {
-            try loadModel(modelUrl: defaultModelUrl)
+            try await loadModel(modelUrl: defaultModelUrl)
         } catch {
             messageLog += "Error!\n"
         }
@@ -100,10 +102,14 @@ class LlamaState: ObservableObject {
             filename: "openhermes-2.5-mistral-7b.Q3_K_M.gguf", status: "download"
         )
     ]
-    func loadModel(modelUrl: URL?) throws {
+    func loadModel(modelUrl: URL?) async throws {
         if let modelUrl {
             messageLog += "Loading model...\n"
-            llamaContext = try LlamaContext.create_context(path: modelUrl.path())
+            let path = modelUrl.path()
+            let newContext = try await Task.detached {
+                try LlamaContext.create_context(path: path)
+            }.value
+            llamaContext = newContext
             messageLog += "Loaded model \(modelUrl.lastPathComponent)\n"
 
             // Assuming that the model is successfully loaded, update the downloaded models
