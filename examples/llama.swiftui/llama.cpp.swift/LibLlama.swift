@@ -116,9 +116,11 @@ actor LlamaContext {
     }
 
     func completion_init(text: String) {
-        print("attempting to complete \"\(text)\"")
+        let formattedPrompt = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful, concise assistant.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n\(text)<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
 
-        tokens_list = tokenize(text: text, add_bos: true)
+        print("attempting to complete \"\(formattedPrompt)\"")
+
+        tokens_list = tokenize(text: formattedPrompt, add_bos: false)
         temporary_invalid_cchars = []
 
         let n_ctx = llama_n_ctx(context)
@@ -300,7 +302,7 @@ actor LlamaContext {
         let utf8Count = text.utf8.count
         let n_tokens = utf8Count + (add_bos ? 1 : 0) + 1
         let tokens = UnsafeMutablePointer<llama_token>.allocate(capacity: n_tokens)
-        let tokenCount = llama_tokenize(vocab, text, Int32(utf8Count), tokens, Int32(n_tokens), add_bos, false)
+        let tokenCount = llama_tokenize(vocab, text, Int32(utf8Count), tokens, Int32(n_tokens), add_bos, true)
 
         var swiftTokens: [llama_token] = []
         for i in 0..<tokenCount {
