@@ -17,6 +17,7 @@ class LlamaState: ObservableObject {
     let NS_PER_S = 1_000_000_000.0
 
     private var llamaContext: LlamaContext?
+    private var isLoadingModel = false
     private var defaultModelUrl: URL? {
         Bundle.main.url(forResource: "ggml-model", withExtension: "gguf", subdirectory: "models")
         // Bundle.main.url(forResource: "llama-2-7b-chat", withExtension: "Q2_K.gguf", subdirectory: "models")
@@ -103,6 +104,13 @@ class LlamaState: ObservableObject {
         )
     ]
     func loadModel(modelUrl: URL?) async throws {
+        guard !isLoadingModel else {
+            messageLog += "A model is already loading, please wait...\n"
+            return
+        }
+        isLoadingModel = true
+        defer { isLoadingModel = false }
+
         if let modelUrl {
             messageLog += "Loading model...\n"
             let path = modelUrl.path()
