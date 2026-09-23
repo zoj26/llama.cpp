@@ -1,4 +1,4 @@
-import Foundation
+mport Foundation
 import llama
 
 enum LlamaError: Error {
@@ -295,7 +295,7 @@ actor LlamaContext {
     func clear() {
         tokens_list.removeAll()
         temporary_invalid_cchars.removeAll()
-        llama_memory_clear(llama_get_memory(context), true)
+        llama_memory_clear(llama_get_memory(context), false)
     }
 
     private func tokenize(text: String, add_bos: Bool) -> [llama_token] {
