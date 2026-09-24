@@ -239,7 +239,14 @@ final class LlamaContext {
             new_token_id = llama_sampler_sample(self.sampling, self.context, self.batch.n_tokens - 1)
 
             if llama_vocab_is_eog(self.vocab, new_token_id) || self.n_cur == self.n_len {
-                print("\n")
+                // DIAGNOSTIC: surface exactly why generation stopped, directly
+                // in the visible chat log, since there's no Mac to view the
+                // Xcode console on this device.
+                if self.n_decode == 0 {
+                    let reason = llama_vocab_is_eog(self.vocab, new_token_id) ? "immediate EOG token (id \(new_token_id))" : "n_cur==n_len before any token"
+                    print("[DIAGNOSTIC] Stopped after zero generated tokens. tokens_list.count=\(self.tokens_list.count), n_cur=\(self.n_cur), n_len=\(self.n_len), reason=\(reason)")
+                    self.temporary_invalid_cchars.append(contentsOf: Array("[debug: 0 tokens, \(reason), prompt_tokens=\(self.tokens_list.count)]".utf8.map { CChar(bitPattern: $0) }))
+                }
                 self.is_done = true
                 let new_token_str = String(cString: self.temporary_invalid_cchars + [0])
                 self.temporary_invalid_cchars.removeAll()
