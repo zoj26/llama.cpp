@@ -195,6 +195,8 @@ final class LlamaContext {
 
     func completion_init(text: String) async {
         await LlamaWorker.shared.run { [self] in
+            self.is_done = false
+
             let formattedPrompt = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful, concise assistant.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n\(text)<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
 
             print("attempting to complete \"\(formattedPrompt)\"")
