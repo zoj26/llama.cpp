@@ -113,10 +113,7 @@ class LlamaState: ObservableObject {
 
         if let modelUrl {
             messageLog += "Loading model...\n"
-            let path = modelUrl.path()
-            let newContext = try await Task.detached {
-                try LlamaContext.create_context(path: path)
-            }.value
+            let newContext = try await LlamaContext.create_context(path: modelUrl.path())
             llamaContext = newContext
             messageLog += "Loaded model \(modelUrl.lastPathComponent)\n"
 
@@ -146,7 +143,7 @@ class LlamaState: ObservableObject {
         messageLog += "\(text)"
 
         Task.detached {
-            while await !llamaContext.is_done {
+            while !llamaContext.is_done {
                 let result = await llamaContext.completion_loop()
                 await MainActor.run {
                     self.messageLog += "\(result)"
@@ -155,7 +152,7 @@ class LlamaState: ObservableObject {
 
             let t_end = DispatchTime.now().uptimeNanoseconds
             let t_generation = Double(t_end - t_heat_end) / self.NS_PER_S
-            let tokens_per_second = Double(await llamaContext.n_len) / t_generation
+            let tokens_per_second = Double(llamaContext.n_len) / t_generation
 
             await llamaContext.clear()
 
