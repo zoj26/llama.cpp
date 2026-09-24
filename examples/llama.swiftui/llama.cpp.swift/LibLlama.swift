@@ -1,4 +1,4 @@
-mport Foundation
+import Foundation
 import llama
 
 enum LlamaError: Error {
