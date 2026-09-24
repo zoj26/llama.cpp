@@ -147,6 +147,7 @@ actor LlamaContext {
         if llama_decode(context, batch) != 0 {
             print("llama_decode() failed")
         }
+        llama_synchronize(context)
 
         n_cur = batch.n_tokens
     }
@@ -190,6 +191,7 @@ actor LlamaContext {
         if llama_decode(context, batch) != 0 {
             print("failed to evaluate llama!")
         }
+        llama_synchronize(context)
 
         return new_token_str
     }
