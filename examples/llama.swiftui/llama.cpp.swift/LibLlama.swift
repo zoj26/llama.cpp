@@ -21,7 +21,75 @@ func llama_batch_add(_ batch: inout llama_batch, _ id: llama_token, _ pos: llama
     batch.n_tokens += 1
 }
 
-actor LlamaContext {
+/// A single, permanent background thread that every llama.cpp call is
+/// funneled through, so the C++ engine never sees work arrive from a
+/// different OS thread than the one it was set up on.
+final class LlamaWorker {
+    static let shared = LlamaWorker()
+
+    private let thread: Thread
+    private let lock = NSLock()
+    private var pendingWork: [() -> Void] = []
+    private let semaphore = DispatchSemaphore(value: 0)
+
+    private init() {
+        thread = Thread { [weak self] in
+            self?.runLoop()
+        }
+        thread.name = "com.pocketpal.llama.worker"
+        thread.stackSize = 8 * 1024 * 1024
+        thread.start()
+    }
+
+    private func runLoop() {
+        while true {
+            semaphore.wait()
+            lock.lock()
+            let work = pendingWork.isEmpty ? nil : pendingWork.removeFirst()
+            lock.unlock()
+            work?()
+        }
+    }
+
+    private func enqueue(_ work: @escaping () -> Void) {
+        lock.lock()
+        pendingWork.append(work)
+        lock.unlock()
+        semaphore.signal()
+    }
+
+    func run<T>(_ block: @escaping () -> T) async -> T {
+        await withCheckedContinuation { continuation in
+            enqueue {
+                continuation.resume(returning: block())
+            }
+        }
+    }
+
+    func runThrowing<T>(_ block: @escaping () throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            enqueue {
+                do {
+                    continuation.resume(returning: try block())
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// Blocking variant, only for use from deinit (which can't be async).
+    func runSync(_ block: @escaping () -> Void) {
+        let sem = DispatchSemaphore(value: 0)
+        enqueue {
+            block()
+            sem.signal()
+        }
+        sem.wait()
+    }
+}
+
+final class LlamaContext {
     private var model: OpaquePointer
     private var context: OpaquePointer
     private var vocab: OpaquePointer
@@ -54,250 +122,271 @@ actor LlamaContext {
     }
 
     deinit {
-        llama_sampler_free(sampling)
-        llama_batch_free(batch)
-        llama_model_free(model)
-        llama_free(context)
-        llama_backend_free()
+        let m = model
+        let c = context
+        let s = sampling
+        let b = batch
+        LlamaWorker.shared.runSync {
+            llama_sampler_free(s)
+            llama_batch_free(b)
+            llama_model_free(m)
+            llama_free(c)
+            llama_backend_free()
+        }
     }
 
-    static func create_context(path: String) throws -> LlamaContext {
-        llama_backend_init()
-        var model_params = llama_model_default_params()
+    static func create_context(path: String) async throws -> LlamaContext {
+        try await LlamaWorker.shared.runThrowing {
+            llama_backend_init()
+            var model_params = llama_model_default_params()
 
-        model_params.n_gpu_layers = 0
-        print("Forcing CPU-only inference (GPU/Metal disabled)")
+            model_params.n_gpu_layers = 0
+            print("Forcing CPU-only inference (GPU/Metal disabled)")
 
-        let model = llama_model_load_from_file(path, model_params)
-        guard let model else {
-            print("Could not load model at \(path)")
-            throw LlamaError.couldNotInitializeContext
+            let model = llama_model_load_from_file(path, model_params)
+            guard let model else {
+                print("Could not load model at \(path)")
+                throw LlamaError.couldNotInitializeContext
+            }
+
+            let n_threads = max(1, min(8, ProcessInfo.processInfo.processorCount - 2))
+            print("Using \(n_threads) threads")
+
+            var ctx_params = llama_context_default_params()
+            ctx_params.n_ctx = 2048
+            ctx_params.n_threads       = Int32(n_threads)
+            ctx_params.n_threads_batch = Int32(n_threads)
+
+            let context = llama_init_from_model(model, ctx_params)
+            guard let context else {
+                print("Could not load context!")
+                throw LlamaError.couldNotInitializeContext
+            }
+
+            return LlamaContext(model: model, context: context)
         }
-
-        let n_threads = max(1, min(8, ProcessInfo.processInfo.processorCount - 2))
-        print("Using \(n_threads) threads")
-
-        var ctx_params = llama_context_default_params()
-        ctx_params.n_ctx = 2048
-        ctx_params.n_threads       = Int32(n_threads)
-        ctx_params.n_threads_batch = Int32(n_threads)
-
-        let context = llama_init_from_model(model, ctx_params)
-        guard let context else {
-            print("Could not load context!")
-            throw LlamaError.couldNotInitializeContext
-        }
-
-        return LlamaContext(model: model, context: context)
     }
 
-    func model_info() -> String {
-        let result = UnsafeMutablePointer<Int8>.allocate(capacity: 256)
-        result.initialize(repeating: Int8(0), count: 256)
-        defer {
-            result.deallocate()
+    func model_info() async -> String {
+        await LlamaWorker.shared.run { [model] in
+            let result = UnsafeMutablePointer<Int8>.allocate(capacity: 256)
+            result.initialize(repeating: Int8(0), count: 256)
+            defer {
+                result.deallocate()
+            }
+
+            let nChars = llama_model_desc(model, result, 256)
+            let bufferPointer = UnsafeBufferPointer(start: result, count: Int(nChars))
+
+            var SwiftString = ""
+            for char in bufferPointer {
+                SwiftString.append(Character(UnicodeScalar(UInt8(char))))
+            }
+
+            return SwiftString
         }
-
-        // TODO: this is probably very stupid way to get the string from C
-
-        let nChars = llama_model_desc(model, result, 256)
-        let bufferPointer = UnsafeBufferPointer(start: result, count: Int(nChars))
-
-        var SwiftString = ""
-        for char in bufferPointer {
-            SwiftString.append(Character(UnicodeScalar(UInt8(char))))
-        }
-
-        return SwiftString
     }
 
-    func get_n_tokens() -> Int32 {
-        return batch.n_tokens;
+    func get_n_tokens() async -> Int32 {
+        await LlamaWorker.shared.run { [batch] in
+            batch.n_tokens
+        }
     }
 
-    func completion_init(text: String) {
-        let formattedPrompt = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful, concise assistant.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n\(text)<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+    func completion_init(text: String) async {
+        await LlamaWorker.shared.run { [self] in
+            let formattedPrompt = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful, concise assistant.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n\(text)<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
 
-        print("attempting to complete \"\(formattedPrompt)\"")
+            print("attempting to complete \"\(formattedPrompt)\"")
 
-        tokens_list = tokenize(text: formattedPrompt, add_bos: false)
-        temporary_invalid_cchars = []
+            self.tokens_list = self.tokenize(text: formattedPrompt, add_bos: false)
+            self.temporary_invalid_cchars = []
 
-        let n_ctx = llama_n_ctx(context)
-        let n_kv_req = tokens_list.count + (Int(n_len) - tokens_list.count)
+            let n_ctx = llama_n_ctx(self.context)
+            let n_kv_req = self.tokens_list.count + (Int(self.n_len) - self.tokens_list.count)
 
-        print("\n n_len = \(n_len), n_ctx = \(n_ctx), n_kv_req = \(n_kv_req)")
+            print("\n n_len = \(self.n_len), n_ctx = \(n_ctx), n_kv_req = \(n_kv_req)")
 
-        if n_kv_req > n_ctx {
-            print("error: n_kv_req > n_ctx, the required KV cache size is not big enough")
+            if n_kv_req > n_ctx {
+                print("error: n_kv_req > n_ctx, the required KV cache size is not big enough")
+            }
+
+            for id in self.tokens_list {
+                print(String(cString: self.token_to_piece(token: id) + [0]))
+            }
+
+            llama_batch_clear(&self.batch)
+
+            for i1 in 0..<self.tokens_list.count {
+                let i = Int(i1)
+                llama_batch_add(&self.batch, self.tokens_list[i], Int32(i), [0], false)
+            }
+            self.batch.logits[Int(self.batch.n_tokens) - 1] = 1 // true
+
+            if llama_decode(self.context, self.batch) != 0 {
+                print("llama_decode() failed")
+            }
+            llama_synchronize(self.context)
+
+            self.n_cur = self.batch.n_tokens
         }
-
-        for id in tokens_list {
-            print(String(cString: token_to_piece(token: id) + [0]))
-        }
-
-        llama_batch_clear(&batch)
-
-        for i1 in 0..<tokens_list.count {
-            let i = Int(i1)
-            llama_batch_add(&batch, tokens_list[i], Int32(i), [0], false)
-        }
-        batch.logits[Int(batch.n_tokens) - 1] = 1 // true
-
-        if llama_decode(context, batch) != 0 {
-            print("llama_decode() failed")
-        }
-        llama_synchronize(context)
-
-        n_cur = batch.n_tokens
     }
 
-    func completion_loop() -> String {
-        var new_token_id: llama_token = 0
+    func completion_loop() async -> String {
+        await LlamaWorker.shared.run { [self] in
+            var new_token_id: llama_token = 0
 
-        new_token_id = llama_sampler_sample(sampling, context, batch.n_tokens - 1)
+            new_token_id = llama_sampler_sample(self.sampling, self.context, self.batch.n_tokens - 1)
 
-        if llama_vocab_is_eog(vocab, new_token_id) || n_cur == n_len {
-            print("\n")
-            is_done = true
-            let new_token_str = String(cString: temporary_invalid_cchars + [0])
-            temporary_invalid_cchars.removeAll()
+            if llama_vocab_is_eog(self.vocab, new_token_id) || self.n_cur == self.n_len {
+                print("\n")
+                self.is_done = true
+                let new_token_str = String(cString: self.temporary_invalid_cchars + [0])
+                self.temporary_invalid_cchars.removeAll()
+                return new_token_str
+            }
+
+            let new_token_cchars = self.token_to_piece(token: new_token_id)
+            self.temporary_invalid_cchars.append(contentsOf: new_token_cchars)
+            let new_token_str: String
+            if let string = String(validatingUTF8: self.temporary_invalid_cchars + [0]) {
+                self.temporary_invalid_cchars.removeAll()
+                new_token_str = string
+            } else if (0 ..< self.temporary_invalid_cchars.count).contains(where: {$0 != 0 && String(validatingUTF8: Array(self.temporary_invalid_cchars.suffix($0)) + [0]) != nil}) {
+                let string = String(cString: self.temporary_invalid_cchars + [0])
+                self.temporary_invalid_cchars.removeAll()
+                new_token_str = string
+            } else {
+                new_token_str = ""
+            }
+            print(new_token_str)
+
+            llama_batch_clear(&self.batch)
+            llama_batch_add(&self.batch, new_token_id, self.n_cur, [0], true)
+
+            self.n_decode += 1
+            self.n_cur    += 1
+
+            if llama_decode(self.context, self.batch) != 0 {
+                print("failed to evaluate llama!")
+            }
+            llama_synchronize(self.context)
+
             return new_token_str
         }
-
-        let new_token_cchars = token_to_piece(token: new_token_id)
-        temporary_invalid_cchars.append(contentsOf: new_token_cchars)
-        let new_token_str: String
-        if let string = String(validatingUTF8: temporary_invalid_cchars + [0]) {
-            temporary_invalid_cchars.removeAll()
-            new_token_str = string
-        } else if (0 ..< temporary_invalid_cchars.count).contains(where: {$0 != 0 && String(validatingUTF8: Array(temporary_invalid_cchars.suffix($0)) + [0]) != nil}) {
-            // in this case, at least the suffix of the temporary_invalid_cchars can be interpreted as UTF8 string
-            let string = String(cString: temporary_invalid_cchars + [0])
-            temporary_invalid_cchars.removeAll()
-            new_token_str = string
-        } else {
-            new_token_str = ""
-        }
-        print(new_token_str)
-        // tokens_list.append(new_token_id)
-
-        llama_batch_clear(&batch)
-        llama_batch_add(&batch, new_token_id, n_cur, [0], true)
-
-        n_decode += 1
-        n_cur    += 1
-
-        if llama_decode(context, batch) != 0 {
-            print("failed to evaluate llama!")
-        }
-        llama_synchronize(context)
-
-        return new_token_str
     }
 
-    func bench(pp: Int, tg: Int, pl: Int, nr: Int = 1) -> String {
-        var pp_avg: Double = 0
-        var tg_avg: Double = 0
+    func bench(pp: Int, tg: Int, pl: Int, nr: Int = 1) async -> String {
+        await LlamaWorker.shared.run { [self] in
+            var pp_avg: Double = 0
+            var tg_avg: Double = 0
 
-        var pp_std: Double = 0
-        var tg_std: Double = 0
+            var pp_std: Double = 0
+            var tg_std: Double = 0
 
-        for _ in 0..<nr {
-            // bench prompt processing
+            for _ in 0..<nr {
+                llama_batch_clear(&self.batch)
 
-            llama_batch_clear(&batch)
+                let n_tokens = pp
 
-            let n_tokens = pp
+                for i in 0..<n_tokens {
+                    llama_batch_add(&self.batch, 0, Int32(i), [0], false)
+                }
+                self.batch.logits[Int(self.batch.n_tokens) - 1] = 1 // true
 
-            for i in 0..<n_tokens {
-                llama_batch_add(&batch, 0, Int32(i), [0], false)
-            }
-            batch.logits[Int(batch.n_tokens) - 1] = 1 // true
+                llama_memory_clear(llama_get_memory(self.context), false)
 
-            llama_memory_clear(llama_get_memory(context), false)
+                let t_pp_start = DispatchTime.now().uptimeNanoseconds / 1000;
 
-            let t_pp_start = DispatchTime.now().uptimeNanoseconds / 1000;
+                if llama_decode(self.context, self.batch) != 0 {
+                    print("llama_decode() failed during prompt")
+                }
+                llama_synchronize(self.context)
 
-            if llama_decode(context, batch) != 0 {
-                print("llama_decode() failed during prompt")
-            }
-            llama_synchronize(context)
+                let t_pp_end = DispatchTime.now().uptimeNanoseconds / 1000;
 
-            let t_pp_end = DispatchTime.now().uptimeNanoseconds / 1000;
+                llama_memory_clear(llama_get_memory(self.context), false)
 
-            // bench text generation
+                let t_tg_start = DispatchTime.now().uptimeNanoseconds / 1000;
 
-            llama_memory_clear(llama_get_memory(context), false)
+                for i in 0..<tg {
+                    llama_batch_clear(&self.batch)
 
-            let t_tg_start = DispatchTime.now().uptimeNanoseconds / 1000;
+                    for j in 0..<pl {
+                        llama_batch_add(&self.batch, 0, Int32(i), [Int32(j)], true)
+                    }
 
-            for i in 0..<tg {
-                llama_batch_clear(&batch)
-
-                for j in 0..<pl {
-                    llama_batch_add(&batch, 0, Int32(i), [Int32(j)], true)
+                    if llama_decode(self.context, self.batch) != 0 {
+                        print("llama_decode() failed during text generation")
+                    }
+                    llama_synchronize(self.context)
                 }
 
-                if llama_decode(context, batch) != 0 {
-                    print("llama_decode() failed during text generation")
-                }
-                llama_synchronize(context)
+                let t_tg_end = DispatchTime.now().uptimeNanoseconds / 1000;
+
+                llama_memory_clear(llama_get_memory(self.context), false)
+
+                let t_pp = Double(t_pp_end - t_pp_start) / 1000000.0
+                let t_tg = Double(t_tg_end - t_tg_start) / 1000000.0
+
+                let speed_pp = Double(pp)    / t_pp
+                let speed_tg = Double(pl*tg) / t_tg
+
+                pp_avg += speed_pp
+                tg_avg += speed_tg
+
+                pp_std += speed_pp * speed_pp
+                tg_std += speed_tg * speed_tg
+
+                print("pp \(speed_pp) t/s, tg \(speed_tg) t/s")
             }
 
-            let t_tg_end = DispatchTime.now().uptimeNanoseconds / 1000;
+            pp_avg /= Double(nr)
+            tg_avg /= Double(nr)
 
-            llama_memory_clear(llama_get_memory(context), false)
+            if nr > 1 {
+                pp_std = sqrt(pp_std / Double(nr - 1) - pp_avg * pp_avg * Double(nr) / Double(nr - 1))
+                tg_std = sqrt(tg_std / Double(nr - 1) - tg_avg * tg_avg * Double(nr) / Double(nr - 1))
+            } else {
+                pp_std = 0
+                tg_std = 0
+            }
 
-            let t_pp = Double(t_pp_end - t_pp_start) / 1000000.0
-            let t_tg = Double(t_tg_end - t_tg_start) / 1000000.0
+            let result_model = UnsafeMutablePointer<Int8>.allocate(capacity: 256)
+            result_model.initialize(repeating: Int8(0), count: 256)
+            let nChars = llama_model_desc(self.model, result_model, 256)
+            let bufferPointer = UnsafeBufferPointer(start: result_model, count: Int(nChars))
+            var model_desc = ""
+            for char in bufferPointer {
+                model_desc.append(Character(UnicodeScalar(UInt8(char))))
+            }
+            result_model.deallocate()
 
-            let speed_pp = Double(pp)    / t_pp
-            let speed_tg = Double(pl*tg) / t_tg
+            let model_size     = String(format: "%.2f GiB", Double(llama_model_size(self.model)) / 1024.0 / 1024.0 / 1024.0);
+            let model_n_params = String(format: "%.2f B", Double(llama_model_n_params(self.model)) / 1e9);
+            let backend        = "Metal";
+            let pp_avg_str     = String(format: "%.2f", pp_avg);
+            let tg_avg_str     = String(format: "%.2f", tg_avg);
+            let pp_std_str     = String(format: "%.2f", pp_std);
+            let tg_std_str     = String(format: "%.2f", tg_std);
 
-            pp_avg += speed_pp
-            tg_avg += speed_tg
+            var result = ""
 
-            pp_std += speed_pp * speed_pp
-            tg_std += speed_tg * speed_tg
+            result += String("| model | size | params | backend | test | t/s |\n")
+            result += String("| --- | --- | --- | --- | --- | --- |\n")
+            result += String("| \(model_desc) | \(model_size) | \(model_n_params) | \(backend) | pp \(pp) | \(pp_avg_str) ± \(pp_std_str) |\n")
+            result += String("| \(model_desc) | \(model_size) | \(model_n_params) | \(backend) | tg \(tg) | \(tg_avg_str) ± \(tg_std_str) |\n")
 
-            print("pp \(speed_pp) t/s, tg \(speed_tg) t/s")
+            return result
         }
-
-        pp_avg /= Double(nr)
-        tg_avg /= Double(nr)
-
-        if nr > 1 {
-            pp_std = sqrt(pp_std / Double(nr - 1) - pp_avg * pp_avg * Double(nr) / Double(nr - 1))
-            tg_std = sqrt(tg_std / Double(nr - 1) - tg_avg * tg_avg * Double(nr) / Double(nr - 1))
-        } else {
-            pp_std = 0
-            tg_std = 0
-        }
-
-        let model_desc     = model_info();
-        let model_size     = String(format: "%.2f GiB", Double(llama_model_size(model)) / 1024.0 / 1024.0 / 1024.0);
-        let model_n_params = String(format: "%.2f B", Double(llama_model_n_params(model)) / 1e9);
-        let backend        = "Metal";
-        let pp_avg_str     = String(format: "%.2f", pp_avg);
-        let tg_avg_str     = String(format: "%.2f", tg_avg);
-        let pp_std_str     = String(format: "%.2f", pp_std);
-        let tg_std_str     = String(format: "%.2f", tg_std);
-
-        var result = ""
-
-        result += String("| model | size | params | backend | test | t/s |\n")
-        result += String("| --- | --- | --- | --- | --- | --- |\n")
-        result += String("| \(model_desc) | \(model_size) | \(model_n_params) | \(backend) | pp \(pp) | \(pp_avg_str) ± \(pp_std_str) |\n")
-        result += String("| \(model_desc) | \(model_size) | \(model_n_params) | \(backend) | tg \(tg) | \(tg_avg_str) ± \(tg_std_str) |\n")
-
-        return result;
     }
 
-    func clear() {
-        tokens_list.removeAll()
-        temporary_invalid_cchars.removeAll()
-        llama_memory_clear(llama_get_memory(context), false)
+    func clear() async {
+        await LlamaWorker.shared.run { [self] in
+            self.tokens_list.removeAll()
+            self.temporary_invalid_cchars.removeAll()
+            llama_memory_clear(llama_get_memory(self.context), false)
+        }
     }
 
     private func tokenize(text: String, add_bos: Bool) -> [llama_token] {
