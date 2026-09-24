@@ -27,7 +27,7 @@ func llama_batch_add(_ batch: inout llama_batch, _ id: llama_token, _ pos: llama
 final class LlamaWorker {
     static let shared = LlamaWorker()
 
-    private let thread: Thread
+    private var thread = Thread()
     private let lock = NSLock()
     private var pendingWork: [() -> Void] = []
     private let semaphore = DispatchSemaphore(value: 0)
