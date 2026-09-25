@@ -13,7 +13,8 @@ jobs:
         run: |
           mkdir -p /tmp/swiftui-backup
           cp -R examples/llama.swiftui /tmp/swiftui-backup/
-          git fetch --tags --force
+          git remote add upstream https://github.com/ggml-org/llama.cpp.git
+          git fetch upstream --tags
           git checkout v0.1.2
           rm -rf examples/llama.swiftui
           cp -R /tmp/swiftui-backup/llama.swiftui examples/llama.swiftui
