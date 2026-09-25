@@ -16,8 +16,8 @@ class LlamaState: ObservableObject {
     @Published var undownloadedModels: [Model] = []
     let NS_PER_S = 1_000_000_000.0
 
+    private var llamaContext: LlamaContext?
     private var isLoadingModel = false
-    private var currentModelPath: String?
 
     // Rolling memory: everything older gets folded into `conversationSummary`;
     // the last few exchanges stay verbatim in `recentMessages` for tone/detail.
@@ -120,12 +120,10 @@ class LlamaState: ObservableObject {
         defer { isLoadingModel = false }
 
         if let modelUrl {
-            // DIAGNOSTIC BUILD: no validation context here — just record the
-            // path. Each message creates its own fresh context when it's
-            // actually needed, so we're not creating and immediately tearing
-            // one down here for no reason.
-            currentModelPath = modelUrl.path()
-            messageLog += "Model selected: \(modelUrl.lastPathComponent)\n"
+            messageLog += "Loading model...\n"
+            let newContext = try await LlamaContext.create_context(path: modelUrl.path())
+            llamaContext = newContext
+            messageLog += "Loaded model \(modelUrl.lastPathComponent)\n"
 
             updateDownloadedModels(modelName: modelUrl.lastPathComponent, status: "downloaded")
         } else {
@@ -151,10 +149,10 @@ class LlamaState: ObservableObject {
     }
 
     /// Folds the oldest recent messages into the running summary, keeping
-    /// only the last `keepRecentCount` verbatim. Uses a fresh context, same
-    /// as everything else in this diagnostic build.
+    /// only the last `keepRecentCount` verbatim. Reuses the one shared
+    /// context, same as everything else now.
     private func compactHistoryIfNeeded() async {
-        guard let currentModelPath else { return }
+        guard let llamaContext else { return }
 
         let approxSize = conversationSummary.count + recentMessages.reduce(0) { $0 + $1.content.count }
         guard approxSize > summarizeThresholdChars, recentMessages.count > keepRecentCount else {
@@ -172,13 +170,10 @@ class LlamaState: ObservableObject {
             summarizePrompt += "\(msg.role): \(msg.content)\n"
         }
 
-        guard let summaryContext = try? await LlamaContext.create_context(path: currentModelPath) else {
-            return
-        }
-        await summaryContext.completion_init(messages: [(role: "user", content: summarizePrompt)])
+        await llamaContext.completion_init(messages: [(role: "user", content: summarizePrompt)])
         var newSummary = ""
-        while !summaryContext.is_done {
-            newSummary += await summaryContext.completion_loop()
+        while !llamaContext.is_done {
+            newSummary += await llamaContext.completion_loop()
         }
 
         conversationSummary = newSummary.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -187,7 +182,7 @@ class LlamaState: ObservableObject {
     }
 
     func complete(text: String) async {
-        guard let currentModelPath else {
+        guard let llamaContext else {
             return
         }
 
@@ -197,12 +192,6 @@ class LlamaState: ObservableObject {
         await compactHistoryIfNeeded()
 
         let t_start = DispatchTime.now().uptimeNanoseconds
-        // DIAGNOSTIC: brand-new context for this one message, used once,
-        // then discarded — no reuse across messages at all.
-        guard let llamaContext = try? await LlamaContext.create_context(path: currentModelPath) else {
-            messageLog += "Failed to load model for this message.\n"
-            return
-        }
         await llamaContext.completion_init(messages: buildPromptMessages())
         let t_heat_end = DispatchTime.now().uptimeNanoseconds
         let t_heat = Double(t_heat_end - t_start) / NS_PER_S
@@ -234,7 +223,7 @@ class LlamaState: ObservableObject {
     }
 
     func bench() async {
-        guard let currentModelPath, let llamaContext = try? await LlamaContext.create_context(path: currentModelPath) else {
+        guard let llamaContext else {
             return
         }
 
@@ -250,7 +239,6 @@ class LlamaState: ObservableObject {
         let t_heat = Double(t_end - t_start) / NS_PER_S
         messageLog += "Heat up time: \(t_heat) seconds, please wait...\n"
 
-        // if more than 5 seconds, then we're probably running on a slow device
         if t_heat > 5.0 {
             messageLog += "Heat up time is too long, aborting benchmark\n"
             return
@@ -263,6 +251,11 @@ class LlamaState: ObservableObject {
     }
 
     func clear() async {
+        guard let llamaContext else {
+            return
+        }
+
+        await llamaContext.clear()
         recentMessages.removeAll()
         conversationSummary = ""
         messageLog = ""
