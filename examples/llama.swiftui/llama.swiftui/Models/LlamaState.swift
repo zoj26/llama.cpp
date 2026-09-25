@@ -18,7 +18,14 @@ class LlamaState: ObservableObject {
 
     private var llamaContext: LlamaContext?
     private var isLoadingModel = false
-    private var conversationHistory: [(role: String, content: String)] = []
+
+    // Rolling memory: everything older gets folded into `conversationSummary`;
+    // the last few exchanges stay verbatim in `recentMessages` for tone/detail.
+    private var conversationSummary: String = ""
+    private var recentMessages: [(role: String, content: String)] = []
+    private let summarizeThresholdChars = 5000
+    private let keepRecentCount = 4
+
     private var defaultModelUrl: URL? {
         Bundle.main.url(forResource: "ggml-model", withExtension: "gguf", subdirectory: "models")
         // Bundle.main.url(forResource: "llama-2-7b-chat", withExtension: "Q2_K.gguf", subdirectory: "models")
@@ -130,20 +137,67 @@ class LlamaState: ObservableObject {
         undownloadedModels.removeAll { $0.name == modelName }
     }
 
+    /// Combines the running summary (if any) with the verbatim recent
+    /// messages, into the actual list sent to the model.
+    private func buildPromptMessages() -> [(role: String, content: String)] {
+        var messages: [(role: String, content: String)] = []
+        if !conversationSummary.isEmpty {
+            messages.append((role: "user", content: "Here is a summary of our conversation so far, for context: \(conversationSummary)"))
+            messages.append((role: "assistant", content: "Got it, I'll keep that in mind as we continue."))
+        }
+        messages.append(contentsOf: recentMessages)
+        return messages
+    }
+
+    /// Folds the oldest recent messages into the running summary, keeping
+    /// only the last `keepRecentCount` verbatim. Uses the model itself to
+    /// do the summarizing, via the same completion machinery as a normal
+    /// reply — just not streamed to the visible chat log.
+    private func compactHistoryIfNeeded() async {
+        guard let llamaContext else { return }
+
+        let approxSize = conversationSummary.count + recentMessages.reduce(0) { $0 + $1.content.count }
+        guard approxSize > summarizeThresholdChars, recentMessages.count > keepRecentCount else {
+            return
+        }
+
+        let toFold = recentMessages.prefix(recentMessages.count - keepRecentCount)
+        let toKeep = Array(recentMessages.suffix(keepRecentCount))
+
+        var summarizePrompt = "Summarize the important facts, names, and context from the following conversation in a few concise sentences, so it can be used as background context later. Do not add commentary, just the summary.\n\n"
+        if !conversationSummary.isEmpty {
+            summarizePrompt += "Existing summary: \(conversationSummary)\n\n"
+        }
+        for msg in toFold {
+            summarizePrompt += "\(msg.role): \(msg.content)\n"
+        }
+
+        await llamaContext.completion_init(messages: [(role: "user", content: summarizePrompt)])
+        var newSummary = ""
+        while !llamaContext.is_done {
+            newSummary += await llamaContext.completion_loop()
+        }
+        await llamaContext.clear()
+
+        conversationSummary = newSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+        recentMessages = toKeep
+        messageLog += "\n[older context compacted to stay within memory]\n\n"
+    }
 
     func complete(text: String) async {
         guard let llamaContext else {
             return
         }
 
-        conversationHistory.append((role: "user", content: text))
+        recentMessages.append((role: "user", content: text))
+        messageLog += "\(text)\n\n"
+
+        await compactHistoryIfNeeded()
 
         let t_start = DispatchTime.now().uptimeNanoseconds
-        await llamaContext.completion_init(messages: conversationHistory)
+        await llamaContext.completion_init(messages: buildPromptMessages())
         let t_heat_end = DispatchTime.now().uptimeNanoseconds
         let t_heat = Double(t_heat_end - t_start) / NS_PER_S
-
-        messageLog += "\(text)\n\n"
 
         Task.detached {
             var fullResponse = ""
@@ -162,7 +216,7 @@ class LlamaState: ObservableObject {
             await llamaContext.clear()
 
             await MainActor.run {
-                self.conversationHistory.append((role: "assistant", content: fullResponse))
+                self.recentMessages.append((role: "assistant", content: fullResponse))
                 self.messageLog += """
                     \n
                     Done
@@ -208,7 +262,8 @@ class LlamaState: ObservableObject {
         }
 
         await llamaContext.clear()
-        conversationHistory.removeAll()
+        recentMessages.removeAll()
+        conversationSummary = ""
         messageLog = ""
     }
 }
