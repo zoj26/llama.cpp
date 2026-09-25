@@ -9,13 +9,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Pin llama.cpp core to stable v0.1.2, keep our Swift UI changes
+      - name: Pin llama.cpp core to stable v0.3.0, keep our Swift UI changes
         run: |
           mkdir -p /tmp/swiftui-backup
           cp -R examples/llama.swiftui /tmp/swiftui-backup/
           git remote add upstream https://github.com/ggml-org/llama.cpp.git
           git fetch upstream --tags
-          git checkout v0.1.2
+          git checkout v0.3.0
           rm -rf examples/llama.swiftui
           cp -R /tmp/swiftui-backup/llama.swiftui examples/llama.swiftui
 
