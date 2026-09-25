@@ -193,25 +193,39 @@ final class LlamaContext {
         }
     }
 
-    func completion_init(text: String) async {
+    /// Builds the full multi-turn prompt from the whole conversation so
+    /// far, not just the latest message, so the model actually has real
+    /// context instead of starting fresh every time.
+    func completion_init(messages: [(role: String, content: String)]) async {
         await LlamaWorker.shared.run { [self] in
             self.is_done = false
 
-            let formattedPrompt = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful, concise assistant.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n\(text)<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+            var formattedPrompt = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful, concise assistant.<|eot_id|>"
+            for msg in messages {
+                formattedPrompt += "<|start_header_id|>\(msg.role)<|end_header_id|>\n\n\(msg.content)<|eot_id|>"
+            }
+            formattedPrompt += "<|start_header_id|>assistant<|end_header_id|>\n\n"
 
             print("attempting to complete \"\(formattedPrompt)\"")
 
             self.tokens_list = self.tokenize(text: formattedPrompt, add_bos: false)
             self.temporary_invalid_cchars = []
 
-            let n_ctx = llama_n_ctx(self.context)
-            let n_kv_req = self.tokens_list.count + (Int(self.n_len) - self.tokens_list.count)
+            let n_ctx = Int(llama_n_ctx(self.context))
 
-            print("\n n_len = \(self.n_len), n_ctx = \(n_ctx), n_kv_req = \(n_kv_req)")
-
-            if n_kv_req > n_ctx {
-                print("error: n_kv_req > n_ctx, the required KV cache size is not big enough")
+            // Enforce the context window for real: reserve room for a
+            // response, and if the whole conversation is too big to fit,
+            // drop the oldest tokens (earliest turns) rather than overflow.
+            let reservedForResponse = 64
+            let maxPromptTokens = max(1, n_ctx - reservedForResponse)
+            if self.tokens_list.count > maxPromptTokens {
+                let dropped = self.tokens_list.count - maxPromptTokens
+                self.tokens_list = Array(self.tokens_list.suffix(maxPromptTokens))
+                print("Conversation too long for context window — dropped \(dropped) oldest tokens, kept \(self.tokens_list.count)")
             }
+            self.n_len = Int32(min(1024, n_ctx - self.tokens_list.count))
+
+            print("\n n_len = \(self.n_len), n_ctx = \(n_ctx), prompt_tokens = \(self.tokens_list.count)")
 
             for id in self.tokens_list {
                 print(String(cString: self.token_to_piece(token: id) + [0]))
@@ -241,9 +255,6 @@ final class LlamaContext {
             new_token_id = llama_sampler_sample(self.sampling, self.context, self.batch.n_tokens - 1)
 
             if llama_vocab_is_eog(self.vocab, new_token_id) || self.n_cur == self.n_len {
-                // DIAGNOSTIC: surface exactly why generation stopped, directly
-                // in the visible chat log, since there's no Mac to view the
-                // Xcode console on this device.
                 if self.n_decode == 0 {
                     let reason = llama_vocab_is_eog(self.vocab, new_token_id) ? "immediate EOG token (id \(new_token_id))" : "n_cur==n_len before any token"
                     print("[DIAGNOSTIC] Stopped after zero generated tokens. tokens_list.count=\(self.tokens_list.count), n_cur=\(self.n_cur), n_len=\(self.n_len), reason=\(reason)")
