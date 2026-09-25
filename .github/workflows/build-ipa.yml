@@ -19,6 +19,11 @@ jobs:
           rm -rf examples/llama.swiftui
           cp -R /tmp/swiftui-backup/llama.swiftui examples/llama.swiftui
 
+      - name: Disable Accelerate's iOS-16.4-only math path (re-enabling GPU path)
+        run: |
+          sed -i '' '/add_compile_definitions(ACCELERATE_NEW_LAPACK)/d' ggml/src/CMakeLists.txt
+          sed -i '' '/add_compile_definitions(ACCELERATE_LAPACK_ILP64)/d' ggml/src/CMakeLists.txt
+
       - name: Build the llama.cpp xcframework (iOS 16.0, device only)
         run: |
           chmod +x build-xcframework.sh
