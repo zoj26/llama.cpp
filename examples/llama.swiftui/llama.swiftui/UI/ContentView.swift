@@ -5,6 +5,8 @@ struct ContentView: View {
     @State private var multiLineText = ""
     @State private var showingHelp = false    // To track if Help Sheet should be shown
 
+    private let charBudget = 6000 // rough safe budget before the ~2048-token context fills up
+
     var body: some View {
         NavigationView {
             VStack {
@@ -22,6 +24,14 @@ struct ContentView: View {
                     .frame(height: 80)
                     .padding()
                     .border(Color.gray, width: 0.5)
+
+                HStack {
+                    Spacer()
+                    Text("\(multiLineText.count) chars")
+                        .font(.caption)
+                        .foregroundColor(multiLineText.count > charBudget ? .red : .gray)
+                }
+                .padding(.horizontal)
 
                 HStack {
                     Button("Send") {
@@ -57,7 +67,6 @@ struct ContentView: View {
 
     func sendText() {
         Task {
-            await llamaState.clear()
             await llamaState.complete(text: multiLineText)
             multiLineText = ""
         }
