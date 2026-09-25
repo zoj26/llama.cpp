@@ -45,8 +45,6 @@ final class LlamaWorker {
     }
 
     private func runLoop() {
-        // One-time, whole-process-lifetime backend init — deliberately
-        // never paired with llama_backend_free() during normal operation.
         llama_backend_init()
         print("llama_backend_init() called once for the process lifetime")
 
@@ -139,9 +137,6 @@ final class LlamaContext {
             llama_batch_free(b)
             llama_model_free(m)
             llama_free(c)
-            // Deliberately NOT calling llama_backend_free() here anymore —
-            // the backend is initialized once for the whole app lifetime
-            // in LlamaWorker, not per-context.
         }
     }
 
@@ -158,8 +153,8 @@ final class LlamaContext {
                 throw LlamaError.couldNotInitializeContext
             }
 
-            let n_threads = max(1, min(8, ProcessInfo.processInfo.processorCount - 2))
-            print("Using \(n_threads) threads")
+            let n_threads = 1
+            print("Using \(n_threads) thread (forced single-threaded to rule out GGML's internal thread-pool race conditions)")
 
             var ctx_params = llama_context_default_params()
             ctx_params.n_ctx = 2048
@@ -222,9 +217,6 @@ final class LlamaContext {
 
             let n_ctx = Int(llama_n_ctx(self.context))
 
-            // Enforce the context window for real: reserve room for a
-            // response, and if the whole conversation is too big to fit,
-            // drop the oldest tokens (earliest turns) rather than overflow.
             let reservedForResponse = 64
             let maxPromptTokens = max(1, n_ctx - reservedForResponse)
             if self.tokens_list.count > maxPromptTokens {
