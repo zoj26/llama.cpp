@@ -143,8 +143,8 @@ final class LlamaContext {
         try await LlamaWorker.shared.runThrowing {
             var model_params = llama_model_default_params()
 
-            model_params.n_gpu_layers = 0
-            print("Forcing CPU-only inference (GPU/Metal disabled)")
+            model_params.n_gpu_layers = 99
+            print("Offloading up to 99 layers to GPU (Metal)")
 
             let model = llama_model_load_from_file(path, model_params)
             guard let model else {
@@ -152,8 +152,8 @@ final class LlamaContext {
                 throw LlamaError.couldNotInitializeContext
             }
 
-            let n_threads = 1
-            print("Using \(n_threads) thread")
+            let n_threads = max(1, min(8, ProcessInfo.processInfo.processorCount - 2))
+            print("Using \(n_threads) threads")
 
             var ctx_params = llama_context_default_params()
             ctx_params.n_ctx = 2048
@@ -196,9 +196,6 @@ final class LlamaContext {
         }
     }
 
-    /// Builds the full multi-turn prompt from the whole conversation so
-    /// far, not just the latest message, so the model actually has real
-    /// context instead of starting fresh every time.
     func completion_init(messages: [(role: String, content: String)]) async {
         await LlamaWorker.shared.run { [self] in
             self.is_done = false
