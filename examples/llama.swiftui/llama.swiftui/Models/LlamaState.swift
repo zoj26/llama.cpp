@@ -18,6 +18,7 @@ class LlamaState: ObservableObject {
 
     private var llamaContext: LlamaContext?
     private var isLoadingModel = false
+    private var conversationHistory: [(role: String, content: String)] = []
     private var defaultModelUrl: URL? {
         Bundle.main.url(forResource: "ggml-model", withExtension: "gguf", subdirectory: "models")
         // Bundle.main.url(forResource: "llama-2-7b-chat", withExtension: "Q2_K.gguf", subdirectory: "models")
@@ -135,16 +136,20 @@ class LlamaState: ObservableObject {
             return
         }
 
+        conversationHistory.append((role: "user", content: text))
+
         let t_start = DispatchTime.now().uptimeNanoseconds
-        await llamaContext.completion_init(text: text)
+        await llamaContext.completion_init(messages: conversationHistory)
         let t_heat_end = DispatchTime.now().uptimeNanoseconds
         let t_heat = Double(t_heat_end - t_start) / NS_PER_S
 
-        messageLog += "\(text)"
+        messageLog += "\(text)\n\n"
 
         Task.detached {
+            var fullResponse = ""
             while !llamaContext.is_done {
                 let result = await llamaContext.completion_loop()
+                fullResponse += result
                 await MainActor.run {
                     self.messageLog += "\(result)"
                 }
@@ -157,6 +162,7 @@ class LlamaState: ObservableObject {
             await llamaContext.clear()
 
             await MainActor.run {
+                self.conversationHistory.append((role: "assistant", content: fullResponse))
                 self.messageLog += """
                     \n
                     Done
@@ -202,6 +208,7 @@ class LlamaState: ObservableObject {
         }
 
         await llamaContext.clear()
+        conversationHistory.removeAll()
         messageLog = ""
     }
 }
