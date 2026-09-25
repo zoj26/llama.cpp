@@ -19,8 +19,6 @@ class LlamaState: ObservableObject {
     private var llamaContext: LlamaContext?
     private var isLoadingModel = false
 
-    // Rolling memory: everything older gets folded into `conversationSummary`;
-    // the last few exchanges stay verbatim in `recentMessages` for tone/detail.
     private var conversationSummary: String = ""
     private var recentMessages: [(role: String, content: String)] = []
     private let summarizeThresholdChars = 5000
@@ -28,7 +26,6 @@ class LlamaState: ObservableObject {
 
     private var defaultModelUrl: URL? {
         Bundle.main.url(forResource: "ggml-model", withExtension: "gguf", subdirectory: "models")
-        // Bundle.main.url(forResource: "llama-2-7b-chat", withExtension: "Q2_K.gguf", subdirectory: "models")
     }
 
     init() {
@@ -136,8 +133,6 @@ class LlamaState: ObservableObject {
         undownloadedModels.removeAll { $0.name == modelName }
     }
 
-    /// Combines the running summary (if any) with the verbatim recent
-    /// messages, into the actual list sent to the model.
     private func buildPromptMessages() -> [(role: String, content: String)] {
         var messages: [(role: String, content: String)] = []
         if !conversationSummary.isEmpty {
@@ -148,9 +143,6 @@ class LlamaState: ObservableObject {
         return messages
     }
 
-    /// Folds the oldest recent messages into the running summary, keeping
-    /// only the last `keepRecentCount` verbatim. Reuses the one shared
-    /// context, same as everything else now.
     private func compactHistoryIfNeeded() async {
         guard let llamaContext else { return }
 
@@ -170,6 +162,7 @@ class LlamaState: ObservableObject {
             summarizePrompt += "\(msg.role): \(msg.content)\n"
         }
 
+        await llamaContext.clear()
         await llamaContext.completion_init(messages: [(role: "user", content: summarizePrompt)])
         var newSummary = ""
         while !llamaContext.is_done {
@@ -190,6 +183,12 @@ class LlamaState: ObservableObject {
         messageLog += "\(text)\n\n"
 
         await compactHistoryIfNeeded()
+
+        // Reset the model's internal memory before every message — since
+        // we resend the whole conversation from scratch each time, the
+        // old KV cache from the last message must not still be sitting
+        // there when this new decode starts.
+        await llamaContext.clear()
 
         let t_start = DispatchTime.now().uptimeNanoseconds
         await llamaContext.completion_init(messages: buildPromptMessages())
