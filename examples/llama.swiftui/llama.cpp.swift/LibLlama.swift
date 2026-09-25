@@ -25,8 +25,7 @@ func llama_batch_add(_ batch: inout llama_batch, _ id: llama_token, _ pos: llama
 /// funneled through, so the C++ engine never sees work arrive from a
 /// different OS thread than the one it was set up on. Also responsible
 /// for calling llama_backend_init() exactly once, ever, for the app's
-/// whole lifetime — repeatedly init/free-ing the backend per-context was
-/// corrupting shared internal state after the first cycle.
+/// whole lifetime.
 final class LlamaWorker {
     static let shared = LlamaWorker()
 
@@ -154,7 +153,7 @@ final class LlamaContext {
             }
 
             let n_threads = 1
-            print("Using \(n_threads) thread (forced single-threaded to rule out GGML's internal thread-pool race conditions)")
+            print("Using \(n_threads) thread")
 
             var ctx_params = llama_context_default_params()
             ctx_params.n_ctx = 2048
@@ -407,6 +406,7 @@ final class LlamaContext {
             self.tokens_list.removeAll()
             self.temporary_invalid_cchars.removeAll()
             llama_memory_clear(llama_get_memory(self.context), false)
+            llama_sampler_reset(self.sampling)
         }
     }
 
