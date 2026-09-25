@@ -23,7 +23,10 @@ func llama_batch_add(_ batch: inout llama_batch, _ id: llama_token, _ pos: llama
 
 /// A single, permanent background thread that every llama.cpp call is
 /// funneled through, so the C++ engine never sees work arrive from a
-/// different OS thread than the one it was set up on.
+/// different OS thread than the one it was set up on. Also responsible
+/// for calling llama_backend_init() exactly once, ever, for the app's
+/// whole lifetime — repeatedly init/free-ing the backend per-context was
+/// corrupting shared internal state after the first cycle.
 final class LlamaWorker {
     static let shared = LlamaWorker()
 
@@ -42,6 +45,11 @@ final class LlamaWorker {
     }
 
     private func runLoop() {
+        // One-time, whole-process-lifetime backend init — deliberately
+        // never paired with llama_backend_free() during normal operation.
+        llama_backend_init()
+        print("llama_backend_init() called once for the process lifetime")
+
         while true {
             semaphore.wait()
             lock.lock()
@@ -131,13 +139,14 @@ final class LlamaContext {
             llama_batch_free(b)
             llama_model_free(m)
             llama_free(c)
-            llama_backend_free()
+            // Deliberately NOT calling llama_backend_free() here anymore —
+            // the backend is initialized once for the whole app lifetime
+            // in LlamaWorker, not per-context.
         }
     }
 
     static func create_context(path: String) async throws -> LlamaContext {
         try await LlamaWorker.shared.runThrowing {
-            llama_backend_init()
             var model_params = llama_model_default_params()
 
             model_params.n_gpu_layers = 0
