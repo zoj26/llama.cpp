@@ -143,8 +143,8 @@ final class LlamaContext {
         try await LlamaWorker.shared.runThrowing {
             var model_params = llama_model_default_params()
 
-            model_params.n_gpu_layers = 99
-            print("Offloading up to 99 layers to GPU (Metal)")
+            model_params.n_gpu_layers = 0
+            print("Forcing CPU-only inference (GPU/Metal disabled) — testing v0.3.0 on CPU")
 
             let model = llama_model_load_from_file(path, model_params)
             guard let model else {
