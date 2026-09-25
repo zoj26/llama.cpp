@@ -120,15 +120,12 @@ class LlamaState: ObservableObject {
         defer { isLoadingModel = false }
 
         if let modelUrl {
-            messageLog += "Loading model...\n"
-            // Validate the model actually loads, then let this context be
-            // discarded — DIAGNOSTIC BUILD: a fresh context gets created
-            // for every single message instead of reusing one across the
-            // whole conversation, to isolate whether reuse itself is the
-            // cause of the recurring second-decode crash.
-            _ = try await LlamaContext.create_context(path: modelUrl.path())
+            // DIAGNOSTIC BUILD: no validation context here — just record the
+            // path. Each message creates its own fresh context when it's
+            // actually needed, so we're not creating and immediately tearing
+            // one down here for no reason.
             currentModelPath = modelUrl.path()
-            messageLog += "Loaded model \(modelUrl.lastPathComponent)\n"
+            messageLog += "Model selected: \(modelUrl.lastPathComponent)\n"
 
             updateDownloadedModels(modelName: modelUrl.lastPathComponent, status: "downloaded")
         } else {
