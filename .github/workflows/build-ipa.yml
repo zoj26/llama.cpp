@@ -6,76 +6,129 @@ on:
 jobs:
   build:
     runs-on: macos-15
+    env:
+      NODE_OPTIONS: --max-old-space-size=8192
     steps:
       - uses: actions/checkout@v4
 
-      - name: Pin llama.cpp core to stable v0.3.0, keep our Swift UI changes
-        run: |
-          mkdir -p /tmp/swiftui-backup
-          cp -R examples/llama.swiftui /tmp/swiftui-backup/
-          git remote add upstream https://github.com/ggml-org/llama.cpp.git
-          git fetch upstream --tags
-          git checkout v0.3.0
-          rm -rf examples/llama.swiftui
-          cp -R /tmp/swiftui-backup/llama.swiftui examples/llama.swiftui
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
 
-      - name: Disable Accelerate's iOS-16.4-only math path (re-enabling GPU path)
-        run: |
-          sed -i '' '/add_compile_definitions(ACCELERATE_NEW_LAPACK)/d' ggml/src/CMakeLists.txt
-          sed -i '' '/add_compile_definitions(ACCELERATE_LAPACK_ILP64)/d' ggml/src/CMakeLists.txt
+      - run: corepack enable
 
-      - name: Build the llama.cpp xcframework (iOS 16.0, device only)
-        run: |
-          chmod +x build-xcframework.sh
-          sed -i '' 's/IOS_MIN_OS_VERSION=16.4/IOS_MIN_OS_VERSION=16.0/' build-xcframework.sh
-          ./build-xcframework.sh ios-device
+      - run: yarn install --frozen-lockfile
 
-      - name: Build llama.swiftui
+      - name: Create Env.xcconfig
         run: |
-          xcodebuild \
-            -project examples/llama.swiftui/llama.swiftui.xcodeproj \
-            -scheme llama.swiftui \
-            -sdk iphoneos \
-            -configuration Release \
-            -destination 'generic/platform=iOS' \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CONFIGURATION_BUILD_DIR=build-ios \
-            IPHONEOS_DEPLOYMENT_TARGET=16.0 \
-            SWIFT_STRICT_CONCURRENCY=minimal \
-            build
+          mkdir -p ios/Config
+          cat > ios/Config/Env.xcconfig << 'EOL'
+          // This file contains environment-specific build settings.
 
-      - name: Install ldid
-        run: |
-          brew install ldid
+          GOOGLE_WEB_CLIENT_ID = dummy-web-client-id.apps.googleusercontent.com
+          REVERSED_GOOGLE_IOS_CLIENT_ID = com.googleusercontent.apps.dummy-ios-client-id
 
-      - name: Apply increased memory entitlements
+          EOL
+
+      - name: Create dummy .env file
         run: |
-          cat > entitlements.plist << 'EOL'
+          cat > .env << 'EOL'
+          FIREBASE_FUNCTIONS_URL=https://dummy-firebase-url.com
+
+          # PalsHub/Supabase Configuration
+          SUPABASE_URL=https://dummy-supabase-url.supabase.co
+          SUPABASE_ANON_KEY=dummy-anon-key-for-ci-builds
+          PALSHUB_API_BASE_URL=https://dummy-palshub-api.com
+
+          # App Configuration
+          APP_URL=pocketpal://app
+
+          # Feature Flags (true/false)
+          ENABLE_PALSHUB_INTEGRATION=false
+          ENABLE_AUTHENTICATION=false
+          ENABLE_OFFLINE_MODE=true
+
+          # Google Sign-In Configuration
+          GOOGLE_IOS_CLIENT_ID=dummy-ios-client-id.apps.googleusercontent.com
+          GOOGLE_WEB_CLIENT_ID=dummy-web-client-id.apps.googleusercontent.com
+          EOL
+
+      - name: Create dummy GoogleService-Info.plist
+        run: |
+          cat > ios/GoogleService-Info.plist << 'EOL'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
-              <key>com.apple.developer.kernel.increased-memory-limit</key>
-              <true/>
-              <key>com.apple.developer.kernel.extended-virtual-addressing</key>
-              <true/>
+            <key>CLIENT_ID</key>
+            <string>dummy-client-id.apps.googleusercontent.com</string>
+            <key>REVERSED_CLIENT_ID</key>
+            <string>com.googleusercontent.apps.dummy-client-id</string>
+            <key>API_KEY</key>
+            <string>dummy-api-key-for-ci-builds</string>
+            <key>GCM_SENDER_ID</key>
+            <string>000000000000</string>
+            <key>PLIST_VERSION</key>
+            <string>1</string>
+            <key>BUNDLE_ID</key>
+            <string>ai.pocketpal</string>
+            <key>PROJECT_ID</key>
+            <string>dummy-project-for-ci</string>
+            <key>STORAGE_BUCKET</key>
+            <string>dummy-project-for-ci.appspot.com</string>
+            <key>IS_ADS_ENABLED</key>
+            <false/>
+            <key>IS_ANALYTICS_ENABLED</key>
+            <false/>
+            <key>IS_APPINVITE_ENABLED</key>
+            <false/>
+            <key>IS_GCM_ENABLED</key>
+            <true/>
+            <key>IS_SIGNIN_ENABLED</key>
+            <true/>
+            <key>GOOGLE_APP_ID</key>
+            <string>1:000000000000:ios:0000000000000000</string>
           </dict>
           </plist>
           EOL
-          ldid -Sentitlements.plist examples/llama.swiftui/build-ios/llama.swiftui.app/llama.swiftui
 
-      - name: List build output
+      - run: cd ios && pod install
+
+      - name: Archive
         run: |
-          find . -name "*.app" -type d
+          cd ios
+          xcodebuild archive \
+            -workspace PocketPal.xcworkspace \
+            -scheme PocketPal \
+            -configuration Release \
+            -archivePath build/PocketPal.xcarchive \
+            -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            COPY_PHASE_STRIP=NO \
+            STRIP_INSTALLED_PRODUCT=NO \
+            DEAD_CODE_STRIPPING=NO
+
+      - name: Diagnose ImageLoader linkage
+        run: |
+          BINARY="ios/build/PocketPal.xcarchive/Products/Applications/PocketPal.app/PocketPal"
+          echo "=== Binary exists? ==="
+          ls -la "$BINARY" || echo "BINARY NOT FOUND AT EXPECTED PATH"
+          echo ""
+          echo "=== Searching binary for ImageLoader-related symbols/strings ==="
+          strings "$BINARY" | grep -i "ImageLoader" || echo "NO 'ImageLoader' STRINGS FOUND IN BINARY AT ALL"
+          echo ""
+          echo "=== Searching for RCTImageLoader class symbol specifically ==="
+          nm "$BINARY" 2>/dev/null | grep -i "RCTImageLoader" || echo "NO RCTImageLoader SYMBOL FOUND"
 
       - name: Package IPA
         run: |
+          cd ios/build
           mkdir Payload
-          cp -r examples/llama.swiftui/build-ios/llama.swiftui.app Payload/
-          zip -r llama-swiftui.ipa Payload
+          cp -r PocketPal.xcarchive/Products/Applications/*.app Payload/
+          zip -r PocketPal.ipa Payload
 
       - uses: actions/upload-artifact@v4
         with:
-          name: llama-swiftui-ipa
-          path: llama-swiftui.ipa
+          name: PocketPal-ipa
+          path: ios/build/PocketPal.ipa
